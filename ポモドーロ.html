@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Pomodoro Timer with Goal Color</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  body { font-family: sans-serif; text-align: center; margin: 20px; background-color: #fff; color: #000; }
+  #timer { font-size: 2.5em; margin: 20px; }
+  #sessionInfo { font-size: 1.2em; margin-bottom: 10px; }
+  input { width: 60px; margin-bottom: 10px; font-size: 1em; padding: 5px; }
+  button { padding: 12px 20px; font-size: 1.2em; margin: 5px; border-radius: 8px; }
+  #statsContainer { max-width: 500px; margin: 10px auto; display: flex; justify-content: space-around; font-size: 1.1em; flex-wrap: wrap; }
+  .statBox { background-color: #f2f2f2; padding: 6px 10px; border-radius: 8px; box-shadow: 0 0 3px rgba(0,0,0,0.2); margin:5px; }
+  #logContainer { width: 100%; max-width: 500px; height: 180px; overflow-y: auto; margin: 10px auto; text-align: left; border: 1px solid #ccc; padding: 10px; border-radius: 8px; background-color: #f9f9f9; }
+  .log-entry { padding: 2px 0; }
+  .log-work { color: #e53935; }
+  .log-break { color: #43a047; }
+  .log-long { color: #1e88e5; }
+
+  body.dark { background-color: #121212; color: #f0f0f0; }
+  body.dark input, body.dark button { background-color: #333; color: #f0f0f0; border: 1px solid #555; }
+  body.dark #statsContainer .statBox { background-color: #222; color: #f0f0f0; box-shadow: none; }
+  body.dark #logContainer { background-color: #222; border-color: #555; }
+  body.dark .log-work { color: #ff8a80; }
+  body.dark .log-break { color: #80e27e; }
+  body.dark .log-long { color: #82b1ff; }
+
+  @media (max-width: 480px) { input { width: 50px; font-size: 1em; } button { padding: 10px 16px; font-size: 1em; } #timer { font-size: 2em; } }
+</style>
+</head>
+<body class="dark">
+
+<h1>Pomodoro Timer</h1>
+
+<div>
+  Work minutes: <input type="number" id="workMinutes" value="25"><br>
+  Break minutes: <input type="number" id="breakMinutes" value="5"><br>
+  Use long break? <input type="checkbox" id="useLongBreak"><br>
+  <span id="longBreakSettings" style="display:none;">
+    Long break minutes: <input type="number" id="longBreakMinutes" value="15"><br>
+    Long break interval (sets): <input type="number" id="longBreakInterval" value="4"><br>
+  </span>
+  Use Dark Mode? <input type="checkbox" id="darkModeCheckbox" checked><br>
+  <div id="buttons">
+    <button id="startBtn">Start</button>
+    <button id="stopBtn" style="display:none;">Stop</button>
+    <button id="resetBtn" style="display:none;">Reset</button>
+  </div>
+</div>
+
+<div id="sessionInfo">Set 1 | Session: Work</div>
+<div id="timer">00:00</div>
+
+<div id="statsContainer">
+  <div class="statBox">作業時間: <span id="totalWorkTime">0</span> 分</div>
+  <div class="statBox">完了セット数: <span id="completedSets">0</span></div>
+  <div class="statBox">今日の目標: <input type="number" id="dailyGoalInput" value="120" style="width:60px"> 分</div>
+  <div class="statBox">達成度: <span id="goalProgress">0%</span></div>
+</div>
+
+<h3>セッション履歴</h3>
+<div id="logContainer"></div>
+
+<script>
+const workInput = document.getElementById("workMinutes");
+const breakInput = document.getElementById("breakMinutes");
+const useLongBreakCheckbox = document.getElementById("useLongBreak");
+const longBreakSettings = document.getElementById("longBreakSettings");
+const longBreakInput = document.getElementById("longBreakMinutes");
+const longBreakIntervalInput = document.getElementById("longBreakInterval");
+const darkModeCheckbox = document.getElementById("darkModeCheckbox");
+const dailyGoalInput = document.getElementById("dailyGoalInput");
+const goalProgressSpan = document.getElementById("goalProgress");
+
+const timerDisplay = document.getElementById("timer");
+const startBtn = document.getElementById("startBtn");
+const stopBtn = document.getElementById("stopBtn");
+const resetBtn = document.getElementById("resetBtn");
+const sessionInfo = document.getElementById("sessionInfo");
+const logContainer = document.getElementById("logContainer");
+const totalWorkTimeSpan = document.getElementById("totalWorkTime");
+const completedSetsSpan = document.getElementById("completedSets");
+
+if ("Notification" in window) Notification.requestPermission();
+
+useLongBreakCheckbox.addEventListener("change", () => {
+  longBreakSettings.style.display = useLongBreakCheckbox.checked ? "block" : "none";
+});
+darkModeCheckbox.addEventListener("change", () => {
+  document.body.classList.toggle("dark", darkModeCheckbox.checked);
+});
+
+let intervalId;
+let remainingSeconds = 0;
+let totalSeconds = 0;
+let currentLabel = "";
+let setNumber = 1;
+let stateQueue = [];
+let logs = [];
+
+if (localStorage.getItem("pomodoroLogs")) {
+  logs = JSON.parse(localStorage.getItem("pomodoroLogs"));
+  renderLogs();
+  updateStats();
+}
+
+function formatTime(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return String(m).padStart(2,'0') + ":" + String(s).padStart(2,'0');
+}
+
+function updateSessionInfo() {
+  const setDisplay = Math.max(1, Math.floor((setNumber + 1)/2));
+  sessionInfo.textContent = "Set " + setDisplay + " | Session: " + currentLabel;
+}
+
+function getColorForPercent(percent) {
+  if (percent < 10) return "#8e44ad"; // 紫
+  if (percent < 20) return "#2980b9"; // 青
+  if (percent < 30) return "#27ae60"; // 緑
+  if (percent < 40) return "#f1c40f"; // 黄
+  if (percent < 50) return "#e67e22"; // オレンジ
+  if (percent < 60) return "#e74c3c"; // 赤
+  if (percent < 70) return "#d35400"; // 暖赤
+  if (percent < 80) return "#c0392b"; // 赤強め
+  if (percent < 90) return "#f39c12"; // 明るいオレンジ
+  return "#e84393"; // ピンク
+}
+
+function updateStats() {
+  let totalWork = 0;
+  let completedSets = 0;
+  logs.forEach(l => {
+    if(l.type === "log-work") {
+      const match = l.text.match(/\((\d+)分\)/);
+      if(match) totalWork += parseInt(match[1]);
+      completedSets++;
+    }
+  });
+  totalWorkTimeSpan.textContent = totalWork;
+  completedSetsSpan.textContent = completedSets;
+
+  const goal = parseInt(dailyGoalInput.value) || 0;
+  const percent = goal > 0 ? Math.floor(totalWork / goal * 100) : 0;
+  goalProgressSpan.textContent = percent + "%";
+  goalProgressSpan.style.color = getColorForPercent(percent);
+
+  if(percent >= 100 && Notification.permission === "granted") {
+    new Notification("今日の目標達成！", { body: "お疲れ様です！" });
+  }
+}
+
+function saveLogsToStorage() {
+  localStorage.setItem("pomodoroLogs", JSON.stringify(logs));
+}
+
+function renderLogs() {
+  const latestLogs = logs.slice(0, 5);
+  logContainer.innerHTML = latestLogs.map(l => `<div class="log-entry ${l.type}">${l.text}</div>`).join("");
+  logContainer.scrollTop = logContainer.scrollHeight;
+}
+
+function logSession(label, duration) {
+  const now = new Date();
+  const logText = now.toLocaleTimeString() + " - " + label + " (" + duration + "分)";
+  let typeClass = label==="Work" ? "log-work" : label==="Break" ? "log-break" : "log-long";
+  const logEntry = {text: logText, type: typeClass};
+  logs.unshift(logEntry);
+  renderLogs();
+  updateStats();
+  saveLogsToStorage();
+}
+
+function startInterval(callback) {
+  intervalId = setInterval(() => {
+    remainingSeconds--;
+    updateTimerDisplay();
+    if (remainingSeconds <= 0) {
+      clearInterval(intervalId);
+      intervalId = null;
+      new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg').play();
+      if (Notification.permission === "granted") {
+        new Notification(currentLabel + " finished", { body: "次のセッションに移ります" });
+      }
+      logSession(currentLabel, Math.floor(totalSeconds/60));
+      callback();
+    }
+  }, 1000);
+}
+
+function runNext() {
+  if (stateQueue.length === 0) {
+    const workMinutes = parseInt(workInput.value);
+    const breakMinutes = parseInt(breakInput.value);
+    const useLongBreak = useLongBreakCheckbox.checked;
+    const longBreakMinutes = useLongBreak ? parseInt(longBreakInput.value) : 0;
+    const longBreakInterval = useLongBreak ? parseInt(longBreakIntervalInput.value) : 0;
+
+    stateQueue.push({minutes: workMinutes, label:"Work"});
+    if (useLongBreak && longBreakInterval > 0 && Math.floor((setNumber +1)/2) % longBreakInterval === 0) {
+      stateQueue.push({minutes: longBreakMinutes, label:"Long Break"});
+    } else {
+      stateQueue.push({minutes: breakMinutes, label:"Break"});
+    }
+    setNumber++;
+  }
+
+  const next = stateQueue.shift();
+  currentLabel = next.label;
+  remainingSeconds = next.minutes * 60;
+  totalSeconds = remainingSeconds;
+  updateTimerDisplay();
+  startInterval(runNext);
+}
+
+function showButtons(startVisible, stopVisible, resetVisible) {
+  startBtn.style.display = startVisible ? "inline-block" : "none";
+  stopBtn.style.display = stopVisible ? "inline-block" : "none";
+  resetBtn.style.display = resetVisible ? "inline-block" : "none";
+}
+
+showButtons(true,false,false);
+
+startBtn.addEventListener("click", () => {
+  if (!intervalId) {
+    if (remainingSeconds <= 0) runNext();
+    else startInterval(runNext);
+  }
+  showButtons(false,true,true);
+});
+
+stopBtn.addEventListener("click", () => {
+  clearInterval(intervalId);
+  intervalId = null;
+  showButtons(true,false,true);
+});
+
+resetBtn.addEventListener("click", () => {
+  clearInterval(intervalId);
+  intervalId = null;
+  remainingSeconds = 0;
+  totalSeconds = 0;
+  setNumber = 1;
+  stateQueue = [];
+  currentLabel = "Work";
+  timerDisplay.textContent = "00:00";
+  sessionInfo.textContent = "Set 1 | Session: Work";
+  logs = [];
+  renderLogs();
+  updateStats();
+  localStorage.removeItem("pomodoroLogs");
+  showButtons(true,false,false);
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.code === "Space") {
+    e.preventDefault();
+    if (intervalId) stopBtn.click();
+    else startBtn.click();
+  }
+  if (e.key === "r" || e.key === "R") resetBtn.click();
+});
+
+function updateTimerDisplay() {
+  timerDisplay.textContent = currentLabel + " | " + formatTime(remainingSeconds);
+  updateSessionInfo();
+}
+</script>
+
+</body>
+</html>
